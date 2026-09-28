@@ -74,14 +74,22 @@ namespace osu.Game.Rulesets.UI
 
             if (mod.Icon != null)
             {
-                contentFlow.Insert(-1, modIcon = new SpriteIcon
+                float iconScale = (mod as IHasModIconScale)?.IconScale ?? 1;
+
+                contentFlow.Insert(-1, new Container
                 {
                     Anchor = Anchor.TopCentre,
                     Origin = Anchor.TopCentre,
                     Size = new Vector2(37, 26),
                     // arbitrary adjustment for better vertical alignment
                     Margin = new MarginPadding { Top = -1 },
-                    Icon = mod.Icon.Value
+                    Child = modIcon = new SpriteIcon
+                    {
+                        Anchor = Anchor.Centre,
+                        Origin = Anchor.Centre,
+                        Size = new Vector2(37, 26) * iconScale,
+                        Icon = mod.Icon.Value,
+                    }
                 });
                 tinySwitch.Scale = new Vector2(0.3f);
             }

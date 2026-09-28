@@ -174,7 +174,8 @@ namespace osu.Game.Rulesets.UI
                             // height is divided by 135 rather than by 100, because this entire component is square-sized.
                             Width = 131 / 135f,
                             Height = 92 / 135f,
-                            Icon = FontAwesome.Solid.Question
+                            Icon = FontAwesome.Solid.Question,
+                            Scale = new Vector2((mod as IHasModIconScale)?.IconScale ?? 1),
                         },
                         adjustmentMarker = new Container
                         {

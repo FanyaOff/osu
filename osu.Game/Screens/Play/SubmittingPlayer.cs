@@ -22,6 +22,7 @@ using osu.Game.Online.Rooms;
 using osu.Game.Online.Spectator;
 using osu.Game.Overlays;
 using osu.Game.Overlays.Notifications;
+using osu.Game.Rulesets.Mods;
 using osu.Game.Rulesets.Scoring;
 using osu.Game.Scoring;
 using osu.Game.Screens.Ranking;
@@ -103,6 +104,12 @@ namespace osu.Game.Screens.Play
             if (Mods.Value.Any(m => !m.UserPlayable))
             {
                 handleTokenFailure(new InvalidOperationException("Non-user playable mod selected."));
+                return false;
+            }
+
+            if (Mods.Value.Any(m => m is IDisallowScoreSubmission))
+            {
+                handleTokenFailure(new InvalidOperationException("A selected mod only supports local play."), displayNotification: true);
                 return false;
             }
 

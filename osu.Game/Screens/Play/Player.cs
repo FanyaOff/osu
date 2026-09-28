@@ -139,6 +139,9 @@ namespace osu.Game.Screens.Play
         [Resolved]
         private OsuGameBase game { get; set; }
 
+        [Resolved]
+        private SkinManager skinManager { get; set; }
+
         public GameplayState GameplayState { get; private set; }
 
         private Ruleset ruleset;
@@ -247,6 +250,18 @@ namespace osu.Game.Screens.Play
                 Logger.Log($@"Gameplay was started with a mod belonging to a ruleset different than '{ruleset.Description}'.", level: LogLevel.Important);
                 return;
             }
+
+            // Aggressive full-library warming is intended for the settings screen only. Stop it
+            // before constructing gameplay so texture uploads cannot compete with frame delivery.
+            skinManager.StopManualPreloadForGameplay();
+
+            // Give runtime skin-switching mods access to the skin manager while loading. Implementations
+            // may start background preparation without extending the map loading screen.
+            foreach (var mod in gameplayMods.OfType<IApplicableToSkinManager>())
+                mod.ApplyToSkinManager(skinManager, cancellationToken);
+
+            if (cancellationToken.IsCancellationRequested)
+                return;
 
             if (game != null)
                 gameActive.BindTo(game.IsActive);

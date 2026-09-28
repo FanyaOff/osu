@@ -35,6 +35,8 @@ namespace osu.Game.Overlays.Settings.Sections
     {
         private SkinDropdown skinDropdown;
 
+        private PreloadSkinsButton preloadSkinsButton;
+
         public override LocalisableString Header => SkinSettingsStrings.SkinSectionHeader;
 
         public override Drawable CreateIcon() => new SpriteIcon
@@ -66,6 +68,7 @@ namespace osu.Game.Overlays.Settings.Sections
                     Caption = SkinSettingsStrings.CurrentSkin,
                     Current = skins.CurrentSkinInfo,
                 }),
+                preloadSkinsButton = new PreloadSkinsButton(),
                 new FillFlowContainer
                 {
                     RelativeSizeAxes = Axes.X,
@@ -120,6 +123,7 @@ namespace osu.Game.Overlays.Settings.Sections
             dropdownItems.AddRange(skins.GetAllUsableSkins());
 
             Schedule(() => skinDropdown.Items = dropdownItems);
+            skins.RefreshSkinPreloadProgress();
         }
 
         protected override void Dispose(bool isDisposing)
@@ -132,6 +136,87 @@ namespace osu.Game.Overlays.Settings.Sections
         private partial class SkinDropdown : FormDropdown<Live<SkinInfo>>
         {
             protected override LocalisableString GenerateItemText(Live<SkinInfo> item) => item.ToString();
+        }
+
+        private partial class PreloadSkinsButton : SettingsButtonV2
+        {
+            [Resolved]
+            private SkinManager skins { get; set; }
+
+            [Resolved]
+            private OsuColour colours { get; set; }
+
+            private ProgressBar progressBar;
+
+            private IBindable<int> completed;
+            private IBindable<int> total;
+            private IBindable<bool> preloading;
+
+            [BackgroundDependencyLoader]
+            private void load()
+            {
+                Action = () => _ = beginPreload();
+                TooltipText = "Loads every skin into the session cache. Wait for completion before starting gameplay.";
+
+                Add(progressBar = new ProgressBar(false)
+                {
+                    RelativeSizeAxes = Axes.Both,
+                    Blending = BlendingParameters.Additive,
+                    FillColour = colours.Blue1,
+                    BackgroundColour = colours.Gray3,
+                    Alpha = 0.35f,
+                    Depth = float.MinValue,
+                });
+            }
+
+            protected override void LoadComplete()
+            {
+                base.LoadComplete();
+
+                completed = skins.PreloadedSkinCount.GetBoundCopy();
+                total = skins.PreloadableSkinCount.GetBoundCopy();
+                preloading = skins.IsPreloadingAllSkins.GetBoundCopy();
+
+                completed.BindValueChanged(_ => updateState());
+                total.BindValueChanged(_ => updateState());
+                preloading.BindValueChanged(_ => updateState());
+
+                skins.RefreshSkinPreloadProgress();
+                updateState();
+            }
+
+            private async System.Threading.Tasks.Task beginPreload()
+            {
+                try
+                {
+                    await skins.PreloadAllSkinsAsync().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Starting gameplay intentionally stops the aggressive settings preload.
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex, "Failed to preload all skins.");
+                }
+            }
+
+            private void updateState()
+            {
+                int skinCount = total.Value;
+                int readyCount = Math.Min(completed.Value, skinCount);
+                bool complete = skinCount > 0 && readyCount == skinCount;
+
+                progressBar.Current.Value = skinCount == 0 ? 0 : (double)readyCount / skinCount;
+                Enabled.Value = !preloading.Value && !complete && skinCount > 0;
+
+                if (preloading.Value)
+                    Text = $"Preloading skins… {readyCount} / {skinCount}";
+                else if (complete)
+                    Text = $"Skins preloaded ({readyCount} / {skinCount})";
+                else
+                    Text = $"Preload skins ({readyCount} / {skinCount})";
+            }
         }
 
         public partial class RenameSkinButton : SettingsButtonV2, IHasPopover

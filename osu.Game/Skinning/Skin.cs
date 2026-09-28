@@ -9,6 +9,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 using osu.Framework.Audio.Sample;
 using osu.Framework.Bindables;
@@ -176,6 +177,79 @@ namespace osu.Game.Skinning
         {
             using (LineBufferedReader reader = new LineBufferedReader(stream, true))
                 Configuration = new LegacySkinDecoder().Decode(reader);
+        }
+
+        /// <summary>
+        /// Eagerly loads all texture and sample resources owned by this skin.
+        /// This is intended for gameplay modes which switch skins at runtime and cannot afford
+        /// to perform first-use decoding on the update thread at the point of the switch.
+        /// </summary>
+        internal async Task PreloadResourcesAsync(CancellationToken cancellationToken, bool fast = false)
+        {
+            var resourcesToLoad = new List<(string Name, bool Texture)>();
+            var seenResources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (string resource in store.GetAvailableResources())
+            {
+                string extension = Path.GetExtension(resource).ToLowerInvariant();
+                string lookupName = resource[..^extension.Length];
+
+                switch (extension)
+                {
+                    case ".png":
+                    case ".jpg":
+                    case ".jpeg":
+                        // High-resolution textures are requested through their base name by TextureStore.
+                        if (lookupName.EndsWith("@2x", StringComparison.OrdinalIgnoreCase))
+                            lookupName = lookupName[..^3];
+
+                        if (Textures != null && seenResources.Add($"texture:{lookupName}"))
+                            resourcesToLoad.Add((lookupName, true));
+                        break;
+
+                    case ".wav":
+                    case ".mp3":
+                    case ".ogg":
+                        if (Samples != null && seenResources.Add($"sample:{lookupName}"))
+                            resourcesToLoad.Add((lookupName, false));
+                        break;
+                }
+            }
+
+            if (fast)
+            {
+                // Manual preloading happens outside gameplay. A small batch keeps all CPU cores and
+                // async stores busy without submitting the entire skin to the renderer at once.
+                foreach (var batch in resourcesToLoad.Chunk(8))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await Task.WhenAll(batch.Select(loadResourceAsync)).ConfigureAwait(false);
+
+                    // Give renderer/audio continuations a chance to drain between batches, without
+                    // imposing a full-frame delay for every individual file.
+                    await Task.Yield();
+                }
+
+                return;
+            }
+
+            foreach (var resource in resourcesToLoad)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await loadResourceAsync(resource).ConfigureAwait(false);
+
+                // Spread atlas and audio-store work over time rather than submitting a burst
+                // large enough to stall the render thread for multiple consecutive frames.
+                await Task.Delay(16, cancellationToken).ConfigureAwait(false);
+            }
+
+            async Task loadResourceAsync((string Name, bool Texture) resource)
+            {
+                if (resource.Texture)
+                    await Textures!.GetAsync(resource.Name, cancellationToken).ConfigureAwait(false);
+                else
+                    await Samples!.GetAsync(resource.Name, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         /// <summary>

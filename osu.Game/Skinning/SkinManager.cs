@@ -18,6 +18,7 @@ using osu.Framework.Graphics;
 using osu.Framework.Graphics.Rendering;
 using osu.Framework.Graphics.Textures;
 using osu.Framework.IO.Stores;
+using osu.Framework.Logging;
 using osu.Framework.Platform;
 using osu.Framework.Threading;
 using osu.Framework.Utils;
@@ -67,6 +68,36 @@ namespace osu.Game.Skinning
 
         private Skin retroSkin { get; }
 
+        private readonly Dictionary<Guid, Skin> preloadedSkins = new Dictionary<Guid, Skin>();
+
+        private readonly object preloadedSkinsLock = new object();
+
+        private readonly HashSet<Guid> skinsWithPreloadedResources = new HashSet<Guid>();
+
+        private readonly Dictionary<Guid, Task> skinPreloadTasks = new Dictionary<Guid, Task>();
+
+        private Task manualPreloadTask;
+
+        private CancellationTokenSource manualPreloadCancellation;
+
+        private readonly BindableInt preloadedSkinCount = new BindableInt();
+
+        private readonly BindableInt preloadableSkinCount = new BindableInt();
+
+        private readonly BindableBool isPreloadingAllSkins = new BindableBool();
+
+        public IBindable<int> PreloadedSkinCount => preloadedSkinCount;
+
+        public IBindable<int> PreloadableSkinCount => preloadableSkinCount;
+
+        public IBindable<bool> IsPreloadingAllSkins => isPreloadingAllSkins;
+
+        private Guid? nextRandomSkinId;
+
+        private readonly HashSet<Guid> rouletteUsedSkins = new HashSet<Guid>();
+
+        private bool repeatRouletteSkins;
+
         private static readonly Live<SkinInfo> random_skin_info = new SkinInfo
         {
             ID = SkinInfo.RANDOM_SKIN,
@@ -107,6 +138,9 @@ namespace osu.Game.Skinning
                 new ArgonProSkin(this),
             };
 
+            foreach (var skin in defaultSkins)
+                preloadedSkins[skin.SkinInfo.ID] = skin;
+
             // Ensure the default entries are present.
             realm.Write(r =>
             {
@@ -119,7 +153,7 @@ namespace osu.Game.Skinning
 
             CurrentSkinInfo.ValueChanged += skin =>
             {
-                CurrentSkin.Value = skin.NewValue.PerformRead(GetSkin);
+                CurrentSkin.Value = getOrCreateSkin(skin.NewValue);
             };
 
             CurrentSkin.Value = argonSkin;
@@ -230,6 +264,279 @@ namespace osu.Game.Skinning
         /// Cycle one skin forward.
         /// </summary>
         public void SelectNextSkin() => cycleSkins(1);
+
+        /// <summary>
+        /// Starts a new Skin Roulette sequence. With repeats disabled, every available skin is used
+        /// once before a new random cycle begins.
+        /// </summary>
+        public void StartSkinRoulette(CancellationToken cancellationToken, bool repeatSkins)
+        {
+            lock (preloadedSkinsLock)
+            {
+                nextRandomSkinId = null;
+                repeatRouletteSkins = repeatSkins;
+                rouletteUsedSkins.Clear();
+                rouletteUsedSkins.Add(CurrentSkinInfo.Value.ID);
+            }
+
+            BeginPreloadingRandomSkin(cancellationToken);
+        }
+
+        /// <summary>
+        /// Randomly chooses one skin from the full library and warms it in the background so the next
+        /// switch does not perform resource discovery, image decoding or sample loading during gameplay.
+        /// No further skin is warmed until the prepared skin is actually selected.
+        /// </summary>
+        public void BeginPreloadingRandomSkin(CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested || CurrentSkinInfo.Disabled)
+                return;
+
+            Task stoppingManualPreload;
+
+            lock (preloadedSkinsLock)
+                stoppingManualPreload = manualPreloadTask?.IsCompleted == false ? manualPreloadTask : null;
+
+            if (stoppingManualPreload != null)
+            {
+                _ = stoppingManualPreload.ContinueWith(_ => BeginPreloadingRandomSkin(cancellationToken),
+                    CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+                return;
+            }
+
+            Guid currentSkinId = CurrentSkinInfo.Value.ID;
+            Live<SkinInfo>[] allSkins = GetAllUsableSkins()
+                                        .Where(s => s.ID != SkinInfo.RANDOM_SKIN && s.ID != currentSkinId)
+                                        .ToArray();
+            Live<SkinInfo>[] candidates;
+
+            lock (preloadedSkinsLock)
+            {
+                candidates = repeatRouletteSkins
+                    ? allSkins
+                    : allSkins.Where(s => !rouletteUsedSkins.Contains(s.ID)).ToArray();
+
+                if (candidates.Length == 0 && !repeatRouletteSkins)
+                {
+                    // Every skin has appeared once. Begin a fresh shuffled cycle, while still
+                    // excluding the currently visible skin to avoid an immediate visual repeat.
+                    rouletteUsedSkins.Clear();
+                    rouletteUsedSkins.Add(currentSkinId);
+                    candidates = allSkins;
+                }
+            }
+
+            if (candidates.Length == 0)
+                return;
+
+            Live<SkinInfo> nextSkin;
+
+            lock (preloadedSkinsLock)
+            {
+                if (nextRandomSkinId != null)
+                    return;
+
+                nextSkin = candidates[RNG.Next(candidates.Length)];
+                nextRandomSkinId = nextSkin.ID;
+
+                if (skinsWithPreloadedResources.Contains(nextSkin.ID))
+                    return;
+            }
+
+            _ = ensureSkinPreloadedAsync(nextSkin, false, CancellationToken.None).ContinueWith(task =>
+            {
+                if (task.IsFaulted)
+                {
+                    Logger.Error(task.Exception, $"Failed to preload skin {nextSkin}.");
+
+                    lock (preloadedSkinsLock)
+                    {
+                        if (nextRandomSkinId == nextSkin.ID)
+                            nextRandomSkinId = null;
+                    }
+                }
+            }, TaskScheduler.Default);
+        }
+
+        /// <summary>
+        /// Preloads every available skin sequentially. The cache is shared with Skin Roulette and
+        /// remains valid across retries and maps for the lifetime of the game process.
+        /// </summary>
+        public Task PreloadAllSkinsAsync()
+        {
+            lock (preloadedSkinsLock)
+            {
+                if (manualPreloadTask?.IsCompleted == false)
+                    return manualPreloadTask;
+
+                manualPreloadCancellation?.Dispose();
+                manualPreloadCancellation = new CancellationTokenSource();
+                return manualPreloadTask = preloadAllSkinsAsync(manualPreloadCancellation.Token);
+            }
+        }
+
+        /// <summary>
+        /// Stops the aggressive settings preload before gameplay starts. Already completed skins
+        /// remain cached, and Skin Roulette can continue with its low-impact single-skin fallback.
+        /// </summary>
+        public void StopManualPreloadForGameplay()
+        {
+            lock (preloadedSkinsLock)
+            {
+                if (manualPreloadTask?.IsCompleted == false)
+                    manualPreloadCancellation?.Cancel();
+            }
+        }
+
+        /// <summary>
+        /// Recounts available and already preloaded skins for settings UI.
+        /// </summary>
+        public void RefreshSkinPreloadProgress()
+        {
+            var available = GetAllUsableSkins().Where(s => s.ID != SkinInfo.RANDOM_SKIN).ToArray();
+            int completed;
+
+            lock (preloadedSkinsLock)
+                completed = available.Count(s => skinsWithPreloadedResources.Contains(s.ID));
+
+            scheduler.Add(() =>
+            {
+                preloadableSkinCount.Value = available.Length;
+                preloadedSkinCount.Value = completed;
+            });
+        }
+
+        private async Task preloadAllSkinsAsync(CancellationToken cancellationToken)
+        {
+            var available = GetAllUsableSkins().Where(s => s.ID != SkinInfo.RANDOM_SKIN).ToArray();
+
+            scheduler.Add(() =>
+            {
+                preloadableSkinCount.Value = available.Length;
+                isPreloadingAllSkins.Value = true;
+            });
+
+            try
+            {
+                foreach (var skin in available)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await ensureSkinPreloadedAsync(skin, true, cancellationToken).ConfigureAwait(false);
+
+                    int completed;
+
+                    lock (preloadedSkinsLock)
+                        completed = available.Count(s => skinsWithPreloadedResources.Contains(s.ID));
+
+                    scheduler.Add(() => preloadedSkinCount.Value = completed);
+                }
+            }
+            finally
+            {
+                scheduler.Add(() => isPreloadingAllSkins.Value = false);
+            }
+        }
+
+        private Task ensureSkinPreloadedAsync(Live<SkinInfo> skinInfo, bool fast, CancellationToken cancellationToken)
+        {
+            TaskCompletionSource<bool> completion;
+
+            lock (preloadedSkinsLock)
+            {
+                if (skinsWithPreloadedResources.Contains(skinInfo.ID))
+                    return Task.CompletedTask;
+
+                if (skinPreloadTasks.TryGetValue(skinInfo.ID, out var existingTask))
+                    return existingTask;
+
+                completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                skinPreloadTasks.Add(skinInfo.ID, completion.Task);
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await getOrCreateSkin(skinInfo).PreloadResourcesAsync(cancellationToken, fast).ConfigureAwait(false);
+
+                    lock (preloadedSkinsLock)
+                    {
+                        skinsWithPreloadedResources.Add(skinInfo.ID);
+                        skinPreloadTasks.Remove(skinInfo.ID);
+                    }
+
+                    completion.SetResult(true);
+                }
+                catch (Exception ex)
+                {
+                    lock (preloadedSkinsLock)
+                        skinPreloadTasks.Remove(skinInfo.ID);
+
+                    completion.SetException(ex);
+                }
+            });
+
+            return completion.Task;
+        }
+
+        /// <summary>
+        /// Selects the next skin only if all of its resources have already been loaded.
+        /// </summary>
+        /// <returns>Whether the skin was changed.</returns>
+        public bool SelectNextPreloadedSkin()
+        {
+            if (CurrentSkinInfo.Disabled)
+                return false;
+
+            Guid targetId;
+
+            lock (preloadedSkinsLock)
+            {
+                if (nextRandomSkinId == null || !skinsWithPreloadedResources.Contains(nextRandomSkinId.Value))
+                    return false;
+
+                targetId = nextRandomSkinId.Value;
+            }
+
+            var nextSkin = GetAllUsableSkins().FirstOrDefault(s => s.ID == targetId);
+
+            if (nextSkin == null)
+                return false;
+
+            CurrentSkinInfo.Value = nextSkin;
+
+            lock (preloadedSkinsLock)
+            {
+                rouletteUsedSkins.Add(targetId);
+                nextRandomSkinId = null;
+            }
+
+            BeginPreloadingRandomSkin(CancellationToken.None);
+            return true;
+        }
+
+        private Skin getOrCreateSkin(Live<SkinInfo> skinInfo)
+        {
+            lock (preloadedSkinsLock)
+            {
+                if (preloadedSkins.TryGetValue(skinInfo.ID, out var cached))
+                    return cached;
+            }
+
+            Skin created = skinInfo.PerformRead(GetSkin);
+
+            lock (preloadedSkinsLock)
+            {
+                if (preloadedSkins.TryGetValue(skinInfo.ID, out var cached))
+                {
+                    created.Dispose();
+                    return cached;
+                }
+
+                preloadedSkins.Add(skinInfo.ID, created);
+                return created;
+            }
+        }
 
         /// <summary>
         /// Retrieve a <see cref="Skin"/> instance for the provided <see cref="SkinInfo"/>

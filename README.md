@@ -4,7 +4,7 @@
 
 ## 1. Skin Roulette Mod (osu!std only)
 
-⚠️ **Important**: After launching the game, please log out of your account and play offline.
+⚠️ **Important**: After launching the game, please log out of your account and play offline. Also, make sure you have enough RAM, as this thing can use quite a lot of memory if you have a lot of skins.
 
 <img width="443" height="80" alt="Skin Roulette Mod" src="https://github.com/user-attachments/assets/73b3b4b6-c371-408a-92aa-b7d854b4cc68" />
 

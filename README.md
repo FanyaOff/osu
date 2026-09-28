@@ -4,6 +4,8 @@
 
 ## 1. Skin Roulette Mod (osu!std only)
 
+⚠️ **Important**: After launching the game, please log out of your account and play offline.
+
 <img width="443" height="80" alt="Skin Roulette Mod" src="https://github.com/user-attachments/assets/73b3b4b6-c371-408a-92aa-b7d854b4cc68" />
 
 <img width="527" height="249" alt="Skin Roulette settings" src="https://github.com/user-attachments/assets/8994a118-4be7-4204-a09b-db39546bf095" />
@@ -16,7 +18,7 @@
 
 ### How to set up the game to play with this mod
 
-1. Download the latest build from the **Releases** page.
+1. Download the latest build from the [Releases](https://github.com/FanyaOff/osu/releases) page.
 2. Unzip the game and launch **osu!.exe**.
 3. Once the game has launched, go to the settings and click the **Preload skins** button. This is necessary to prevent major lag spikes during gameplay.
 4. While the skins are being preloaded, the game may freeze or become laggy. This is normal — just wait for the process to finish.

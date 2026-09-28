@@ -1,6 +1,36 @@
-<p align="center">
-  <img width="500" alt="osu! logo" src="assets/lazer.png">
-</p>
+# A fun repository for experimenting with osu! code
+
+**Currently implemented features:**
+
+## 1. Skin Roulette Mod (osu!std only)
+
+<img width="443" height="80" alt="Skin Roulette Mod" src="https://github.com/user-attachments/assets/73b3b4b6-c371-408a-92aa-b7d854b4cc68" />
+
+<img width="527" height="249" alt="Skin Roulette settings" src="https://github.com/user-attachments/assets/8994a118-4be7-4204-a09b-db39546bf095" />
+
+### Available settings
+
+**Combo interval:** Switches to the next available skin every time you reach the specified combo interval. The minimum value is 30 and the maximum is 200.
+
+**Repeat skins:** When disabled, skins won't repeat. When enabled, the same skins can appear again.
+
+### How to set up the game to play with this mod
+
+1. Download the latest build from the **Releases** page.
+2. Unzip the game and launch **osu!.exe**.
+3. Once the game has launched, go to the settings and click the **Preload skins** button. This is necessary to prevent major lag spikes during gameplay.
+4. While the skins are being preloaded, the game may freeze or become laggy. This is normal — just wait for the process to finish.
+
+<img width="1140" height="374" alt="Preload skins button" src="https://github.com/user-attachments/assets/b6b403ae-6654-4bf6-a690-f750ae4432a7" />
+
+5. Once the skins are ready, select the mod and have fun!
+
+### Showcase
+
+Check out the showcase video:
+https://www.youtube.com/watch?v=RgHUPtjmjpc
+
+---
 
 # osu!
 
